@@ -4,7 +4,13 @@ import sys
 from pathlib import Path
 from base import Task
 from hotpot import *
-from models import gpt
+from models import gpt as _gpt_base
+import lats
+
+# 전역 gpt 함수 - lats.py에서 partial로 설정된 함수를 사용하기 위해
+# lats.py에서 설정한 전역 gpt를 사용하도록 함
+# lats_search가 실행되면 lats.gpt가 설정되므로 이를 사용
+gpt = _gpt_base
 
 # Import PerturbQA-specific prompts
 try:
@@ -161,10 +167,16 @@ class PerturbQATask(Task):
         return self.data[idx][3]
     
     def test_output(self, idx: int, output: str):
+        # lats.py에서 설정한 전역 gpt 함수를 사용
+        # lats_search가 실행되면 lats.gpt가 partial로 감싸져서 설정됨
+        # lats 모듈의 전역 gpt 사용 (lats_search에서 설정된 model, temperature 등이 자동 적용됨)
+        global_gpt = getattr(lats, 'gpt', _gpt_base)  # lats 모듈의 전역 gpt 사용, 없으면 기본 gpt 사용
+        
         output = output.split('Action:\n')[-1]
         prompt = score_prompt + output
         # max_tokens를 충분히 크게 설정하여 평가 응답이 잘리지 않도록 함
-        score_outputs = gpt(prompt, n=5, model='gpt-4', max_tokens=500)
+        # 전역 gpt 함수 사용 (lats.py에서 설정한 model, temperature 등이 자동 적용됨)
+        score_outputs = global_gpt(prompt, n=5, max_tokens=500)
         scores = []
         for score_output in score_outputs:
             pattern = r".*correctness score is (\d+).*"
@@ -184,6 +196,11 @@ class PerturbQATask(Task):
 
     @staticmethod
     def generate_self_reflection(z, question):
+        # lats.py에서 설정한 전역 gpt 함수를 사용
+        # lats_search가 실행되면 lats.gpt가 partial로 감싸져서 설정됨
+        # lats 모듈의 전역 gpt 사용 (lats_search에서 설정된 model, temperature 등이 자동 적용됨)
+        global_gpt = getattr(lats, 'gpt', _gpt_base)  # lats 모듈의 전역 gpt 사용, 없으면 기본 gpt 사용
+        
         reflection_mapping = []
         trajectories = ""
 
@@ -197,7 +214,8 @@ class PerturbQATask(Task):
             reflect_prompt = reflection_prompt.format(trajectory=traj)
             
             # max_tokens를 충분히 크게 설정하여 반성 응답이 잘리지 않도록 함
-            reflection = gpt(reflect_prompt, max_tokens=1000)
+            # 전역 gpt 함수 사용 (lats.py에서 설정한 model, temperature 등이 자동 적용됨)
+            reflection = global_gpt(reflect_prompt, max_tokens=1000)
             
             trajectories += "Reflection: " + reflection[0] + "\n"
             

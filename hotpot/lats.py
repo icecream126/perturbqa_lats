@@ -18,8 +18,12 @@ LATS (Language Agent Tree Search) 알고리즘 구현
 import itertools
 import numpy as np
 from functools import partial
-from models import gpt
+from models import gpt as _gpt_base
 import wikienv, wrappers
+
+# 전역 gpt 함수 - lats_search에서 partial로 설정됨
+# 다른 모듈(perturbqa.py 등)에서도 접근 가능하도록 모듈 레벨 변수로 설정
+gpt = _gpt_base
 import requests
 import logging
 import random
