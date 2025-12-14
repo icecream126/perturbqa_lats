@@ -136,6 +136,132 @@ class HotPotQAWrapper(gym.Wrapper):
   def __len__(self):
     return len(self.data)
 
+class PerturbQAWrapper(gym.Wrapper):
+  def __init__(self, env, sorted_genes_dir=None):
+    super().__init__(env)
+    
+    # Import perturbQA data loading
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'MoA_finetune'))
+    try:
+      from utils.progressive_reasoning.data_loader import load_sorted_genes_data
+    except ImportError:
+      raise ImportError("Could not import perturbQA data loading utilities")
+    
+    if sorted_genes_dir is None:
+      sorted_genes_dir = os.getenv('PERTURBQA_DATA_DIR', None)
+      if sorted_genes_dir is None:
+        raise ValueError("sorted_genes_dir must be provided or set PERTURBQA_DATA_DIR environment variable")
+    
+    # Load perturbQA data
+    pert_data = load_sorted_genes_data(sorted_genes_dir)
+    
+    # Convert to question-answer format
+    self.data = []
+    for pert_gene, records in pert_data.items():
+      question = f"What genes are affected when {pert_gene} is perturbed?"
+      affected_genes = [r.get('gene', '') for r in records if r.get('gene')]
+      answer = ', '.join(affected_genes[:10])  # Top 10 genes as answer
+      self.data.append((question, answer, pert_gene, records))
+    
+    self.data_idx = 0
+    self.pert_data = pert_data
+
+  def reset(self, seed=None, return_info=False, options=None, idx=None):
+    self.env.reset(seed=seed, return_info=return_info, options=options)
+    try:
+      self.env.step('')
+    except:
+      pass
+    self.env.reset(seed=seed, return_info=return_info, options=options)
+    self.data_idx = int(np.random.randint(len(self.data))) if idx is None else idx
+    observation = f"Question: {self.data[self.data_idx][0]}"
+    info = self._get_info()
+    return (observation, info) if return_info else observation
+
+  def _get_info(self):
+    return {
+      "steps": self.steps, 
+      "answer": self.answer,
+      "question": self.data[self.data_idx][0],
+      "pert_gene": self.data[self.data_idx][2],
+      "perturbqa_split": "train"
+    }
+
+  def get_reward(self, info):
+    if info['answer'] is not None:
+      pred = normalize_answer(info['answer'])
+      gt = normalize_answer(self.data[self.data_idx][1])
+      # For perturbQA, we check if predicted genes match ground truth genes
+      pred_genes = set([g.strip() for g in pred.split(',')])
+      gt_genes = set([g.strip() for g in gt.split(',')])
+      # Calculate F1-like score based on overlap
+      if len(gt_genes) == 0:
+        return 0
+      intersection = pred_genes & gt_genes
+      if len(intersection) == 0:
+        return 0
+      precision = len(intersection) / len(pred_genes) if len(pred_genes) > 0 else 0
+      recall = len(intersection) / len(gt_genes)
+      f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+      # Return 1 if F1 > 0.5, else 0
+      return int(f1 > 0.5)
+    return 0
+  
+  def get_metrics(self, info):
+    if info['answer'] is not None:
+      pred = normalize_answer(info['answer'])
+      gt = normalize_answer(self.data[self.data_idx][1])
+      pred_genes = set([g.strip() for g in pred.split(',')])
+      gt_genes = set([g.strip() for g in gt.split(',')])
+      intersection = pred_genes & gt_genes
+      if len(gt_genes) == 0:
+        return {'reward': 0, 'em': 0, 'f1': 0}
+      precision = len(intersection) / len(pred_genes) if len(pred_genes) > 0 else 0
+      recall = len(intersection) / len(gt_genes)
+      f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+      em = int(pred_genes == gt_genes)
+      reward = int(f1 > 0.5)
+      return {'reward': reward, 'em': em, 'f1': f1}
+    return {'reward': 0, 'em': 0, 'f1': 0}
+
+  def step(self, action):
+    # PerturbQA는 Search, Analyze, Finish 액션을 사용
+    # wikienv는 search, lookup, finish, think만 지원하므로 Analyze를 처리해야 함
+    action = action.strip()
+    
+    # Analyze 액션 처리 (wikienv에서 지원하지 않음)
+    if action.startswith("analyze[") and action.endswith("]"):
+      # Analyze 액션은 정보 분석을 의미하므로, 관찰만 반환하고 done=False 유지
+      param = action[len("analyze["):-1]
+      obs = f"Analyzing {param}: Based on the provided domain knowledge, this relationship involves complex biological mechanisms that require careful consideration of the available evidence."
+      done = False
+      reward = 0
+      info = self._get_info()
+      return obs, reward, done, info
+    
+    # Finish 액션이 아닌 경우 done=False로 강제 설정
+    # (wikienv가 finish 액션에 대해 done=True를 반환하지만, 
+    #  PerturbQA에서는 Finish 액션만 종료를 의미하므로 다른 액션은 계속 진행 가능)
+    is_finish_action = action.startswith("finish[") and action.endswith("]")
+    
+    obs, _, done, info = self.env.step(action)
+    
+    # Finish 액션이 아닌 경우 done=False로 강제 설정
+    if not is_finish_action:
+      done = False
+    
+    reward = self.get_reward(info)
+    if done:
+      obs = f"Episode finished, reward = {reward}\n"
+      info.update({"gt_answer": self.data[self.data_idx][1], "question_idx": self.data_idx})
+      info.update(self.get_metrics(info))
+    return obs, reward, done, info
+  
+  def __len__(self):
+    return len(self.data)
+
 class FeverWrapper(gym.Wrapper):
   def __init__(self, env, split):
     super().__init__(env)
